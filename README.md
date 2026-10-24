@@ -149,3 +149,66 @@ node scripts/e2e.mjs
 - 大陆服务器需完成**ICP 备案**并启用 **HTTPS**（Service Worker 与 Web Push 均要求安全上下文，`localhost` 除外）
 - 拼车功能仅撮合，**禁止盈利**，已在帖子发布页与免责声明中明示
 - 运动类活动风险自担，已在用户协议与免责声明中明示
+
+---
+
+## 公网部署（Vercel，最快路径）
+
+代码已初始化为 git 仓库，部署只需「推到 GitHub → Vercel 导入 → 填变量」三步。
+
+### 0. 准备工作（本地，已帮你做好）
+
+- 代码已 `git commit`，`.env` / `node_modules` / `*.db` / 运行日志均已 gitignore，**密钥不会上传**
+- `.env.example` 是部署变量清单
+- `npm run build` 已包含 `prisma db push`，部署时自动建表
+
+### 1. 推到 GitHub
+
+```bash
+# 在 GitHub 网页新建一个空仓库（不要勾 README / .gitignore / License），
+# 然后把下面两行里的 URL 换成你的仓库地址，执行：
+git remote add origin https://github.com/你的用户名/你的仓库名.git
+git branch -M main
+git push -u origin main
+```
+
+> 提示：本地 `git push` 到 GitHub 需要登录。第一次会弹窗/要求 Personal Access Token（GitHub 现在不支持密码推送）。
+> Token 在 GitHub → Settings → Developer settings → Personal access tokens 生成，勾 `repo` 权限即可。
+
+### 2. Vercel 导入并配置
+
+1. 打开 vercel.com → **Add New → Project** → 选你的 GitHub 仓库 → Import
+2. Framework 会自动识别为 **Next.js**，无需改构建命令
+3. 展开 **Environment Variables**，逐项填入（对照 `.env.example`）：
+   - `DATABASE_URL`：托管 PostgreSQL 的连接串（见步骤 3）。**这一项必须先填好**，否则构建会因连不上库而失败
+   - `SESSION_SECRET`、`NEXT_PUBLIC_VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY`、`VAPID_SUBJECT`、`NEXT_PUBLIC_SITE_URL`：把本地 `.env` 里的对应值**原样复制**过来
+   - `CRON_SECRET`：可留空（留空则 `/api/cron` 免校验）
+4. 点击 **Deploy**
+
+### 3. 准备数据库（PostgreSQL）
+
+Vercel 的免费套餐没有数据库，需外接一个托管 Postgres（推荐 **Neon**，免费、和 Vercel 集成最好）：
+
+1. 注册 neon.tech（可用 GitHub 登录）→ New Project → 拿到连接串
+2. 连接串形如 `postgresql://user:pass@host/db?sslmode=require`，填到上面的 `DATABASE_URL`
+3. 部署时 `prisma db push` 会自动把表结构推上去
+
+> 国内访问 Neon 可能偏慢，也可换 Supabase（supabase.com，免费层同样可用）。
+
+### 4. 写入演示数据（可选）
+
+部署后数据库是空的（大厅为空）。想恢复演示账号和数据，在本地拉取 Vercel 环境变量后跑 seed：
+
+```bash
+npx vercel env pull .env.local   # 拉取 Vercel 上的变量到本地
+# 把 .env.local 里的 DATABASE_URL 复制进 .env，然后：
+npm run db:seed
+```
+
+或直接用管理员账号在线上注册、自己发帖。
+
+### 5. 上线后注意
+
+- Vercel 给的域名形如 `xxx.vercel.app`，**发给同学即可直接打开**（大陆访问可能偶发偏慢）
+- 代码推新提交后，Vercel 会**自动重新部署**
+- 定时任务：服务内置每 60 秒自动跑（`/api/cron` 由 `instrumentation.ts` 启动）。若需更可靠的兜底，可在 Vercel 用 Cron 或 GitHub Actions 定时请求你的 `/api/cron?secret=你的CRON_SECRET`

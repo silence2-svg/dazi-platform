@@ -1,0 +1,303 @@
+// 大连理工盘锦校区「搭子」平台 — 数据模型
+//
+// 数据库说明：
+// 默认使用 SQLite 以便「零配置」本地跑通（npm run setup 即可）。
+// 生产环境切换 PostgreSQL 只需两处改动，schema 完全兼容：
+//   1) datasource provider 改为 "postgresql"
+//   2) .env 中 DATABASE_URL 改为 postgresql://...
+// 所有状态字段使用 String 而非 enum，正是为了保持两种数据库零差异。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============ 用户与身份 ============
+
+model User {
+  id           String    @id @default(cuid())
+  email        String?   @unique // 学校邮箱，认证优先方式
+  studentNo    String?   @unique // 学号
+  nickname     String
+  passwordHash String
+  avatarUrl    String?
+  campus       String    @default("盘锦校区")
+  grade        String? // 年级
+  college      String? // 书院/学院
+
+  // 联系方式：默认不公开，仅在报名被确认后向双方展示
+  contactInfo      String?
+  contactVisibility String @default("private") // private | confirmed | public
+
+  // 角色与状态
+  role   String @default("user") // user | admin
+  status String @default("active") // active | banned
+
+  // 认证状态：发帖与报名必须完成认证
+  verified        Boolean   @default(false)
+  verifyMethod    String? // email | student
+  verifiedAt      DateTime?
+
+  banReason  String?
+  bannedUntil DateTime?
+
+  pushEnabled Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  posts          Post[]
+  applications   Application[]
+  notifications  Notification[]
+  reports        Report[]       @relation("reporter")
+  subscriptions  PushSubscription[]
+  dailyQuota     DailyQuota[]
+
+  blocksMade     Block[] @relation("blocker")
+  blocksReceived Block[] @relation("blocked")
+  reportsAgainst  Report[] @relation("userReports")
+
+  @@index([status])
+  @@index([role])
+}
+
+// ============ 帖子 ============
+
+model Post {
+  id          String @id @default(cuid())
+  authorId    String
+  author      User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  // 类型：study | basketball | tennis | badminton | carpool | tournament | other
+  type        String
+  title       String
+  description String @default("")
+
+  // 地点：优先从校区地点库选择
+  location    String
+
+  // ---- 时间字段拆分（PRD 第二节第4条）----
+  visibleAt      DateTime // 定时可见时间（立即发布 = 当前时间）
+  signupDeadline DateTime // 报名截止时间
+  eventStart     DateTime // 活动开始时间
+  eventEnd       DateTime // 活动结束时间
+
+  maxParticipants Int
+  // 已确认人数（冗余计数，保证满员判断的原子性与性能）
+  currentConfirmed Int @default(0)
+  // 待确认人数，用于发布者决策参考
+  currentPending   Int @default(0)
+  // 候补人数
+  currentWaitlisted Int @default(0)
+
+  // scheduled | open | full | closed | expired | archived | deleted
+  status String @default("scheduled")
+
+  // 联系方式可见性：confirmed（确认后可见，默认）| public | private
+  contactVisibility String @default("confirmed")
+
+  // 标签，逗号分隔
+  tags String @default("")
+
+  // 拼车相关：仅信息撮合，禁止盈利
+  costNote String?
+
+  cancelReason String?
+
+  // ---- 生命周期时间戳 ----
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  closedAt  DateTime? // 报名被关闭（截止/满员/手动）
+  archivedAt DateTime? // 活动结束，已下架归档
+  // 归档满 30 天后物理删除；有举报/纠纷的顺延
+  purgeAt   DateTime?
+
+  applications Application[]
+  reports      Report[]       @relation("postReports")
+  reminders    EventReminder[]
+
+  @@index([status, visibleAt])
+  @@index([status, eventEnd])
+  @@index([authorId, status])
+  @@index([purgeAt])
+  @@index([type])
+}
+
+// ============ 报名 ============
+
+model Application {
+  id          String  @id @default(cuid())
+  postId      String
+  post        Post    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  applicantId String
+  applicant   User    @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+
+  // 报名留言：默认仅发布者可见
+  message String @default("")
+
+  // pending | confirmed | waitlisted | rejected | cancelled
+  status String @default("pending")
+
+  // 候补递补序号，保证递补顺序公平
+  waitlistSeq Int?
+
+  // 该报名是否已向双方展示联系方式
+  contactRevealed Boolean @default(false)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  decidedAt DateTime?
+
+  reports Report[] @relation("applicationReports")
+
+  @@unique([postId, applicantId])
+  @@index([postId, status])
+  @@index([applicantId, status])
+}
+
+// ============ 通知 ============
+
+model Notification {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // new_application | application_confirmed | application_rejected |
+  // waitlist_promoted | post_full | event_remind | post_cancelled |
+  // post_closed | system | report_resolved
+  type  String
+  title String
+  body  String
+  link  String?
+
+  isRead Boolean @default(false)
+
+  // 去重键：避免定时任务重复推送同一条提醒
+  dedupeKey String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@index([dedupeKey])
+}
+
+// ============ 事件提醒（活动前 1 天 / 1 小时）============
+
+model EventReminder {
+  id     String @id @default(cuid())
+  postId String
+  post   Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  // day_1 | hour_1
+  kind      String
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([postId, kind])
+}
+
+// ============ 举报 ============
+
+model Report {
+  id         String @id @default(cuid())
+  reporterId String
+  reporter   User   @relation("reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  // post | application | comment | user
+  targetType   String
+  targetPostId        String?
+  targetPost          Post?        @relation("postReports", fields: [targetPostId], references: [id], onDelete: Cascade)
+  targetApplicationId String?
+  targetApplication   Application? @relation("applicationReports", fields: [targetApplicationId], references: [id], onDelete: Cascade)
+  targetUserId String?
+  targetUser   User?   @relation("userReports", fields: [targetUserId], references: [id], onDelete: Cascade)
+
+  reason     String
+  detail     String  @default("")
+  // pending | resolved | rejected
+  status     String  @default("pending")
+  handlerNote String @default("")
+
+  createdAt DateTime  @default(now())
+  handledAt DateTime?
+
+  @@index([status, createdAt])
+  @@index([targetPostId])
+}
+
+// ============ 拉黑 ============
+
+model Block {
+  id            String @id @default(cuid())
+  userId        String
+  user          User   @relation("blocker", fields: [userId], references: [id], onDelete: Cascade)
+  blockedUserId String
+  blockedUser   User   @relation("blocked", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, blockedUserId])
+}
+
+// ============ 敏感词 ============
+
+model SensitiveWord {
+  id        String   @id @default(cuid())
+  word      String   @unique
+  // block（直接拒绝） | review（转人工审核）
+  action    String   @default("block")
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+// ============ Web Push 订阅 ============
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ============ 身份认证码 ============
+// 邮箱验证码 / 学号验证码。生产环境建议替换为 Redis。
+
+model VerifyCode {
+  id         String   @id @default(cuid())
+  channel    String // email | student
+  identifier String // 邮箱地址或学号
+  purpose    String // register | login
+  code       String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([channel, identifier, purpose])
+}
+
+// ============ 每日频率配额 ============
+// PRD：发帖每日 5 条，报名每日 20 条，留言每日 50 条
+
+model DailyQuota {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date   String // YYYY-MM-DD
+
+  postCount       Int @default(0)
+  applyCount      Int @default(0)
+  commentCount    Int @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date])
+}

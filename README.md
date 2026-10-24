@@ -212,3 +212,36 @@ npm run db:seed
 - Vercel 给的域名形如 `xxx.vercel.app`，**发给同学即可直接打开**（大陆访问可能偶发偏慢）
 - 代码推新提交后，Vercel 会**自动重新部署**
 - 定时任务：服务内置每 60 秒自动跑（`/api/cron` 由 `instrumentation.ts` 启动）。若需更可靠的兜底，可在 Vercel 用 Cron 或 GitHub Actions 定时请求你的 `/api/cron?secret=你的CRON_SECRET`
+
+---
+
+## 国内部署（腾讯云 CloudBase 云托管，推荐用于大陆访问）
+
+Vercel 在大陆没有节点，国内同学经常打不开 / 响应超时。若目标用户主要在国内（如盘锦校区），推荐改用**腾讯云 CloudBase 云托管**：国内节点、访问稳定、支持 Next.js 容器化部署，且能**保留现有 Prisma + PostgreSQL 架构，业务代码零改动**。
+
+### 1. 准备腾讯云账号
+
+- 注册腾讯云（cloud.tencent.com）并完成**实名认证**（个人实名通常几分钟）。
+- 进入「云开发 CloudBase」控制台 → 新建环境（基础版 / 按量计费均可，有免费额度）。
+
+### 2. 部署（基于仓库的 Docker 构建）
+
+仓库根目录已提供 `Dockerfile` 与 `.dockerignore`，云托管会据此把 Next.js 打成容器镜像：
+
+1. 云开发控制台 → 左侧「云托管」→ 新建服务 → 选择「从代码仓库导入」（授权 GitHub / 绑定你的仓库）。
+2. 构建方式选 **Docker 构建**，仓库分支选 `main`。
+3. 设置**环境变量**（云托管控制台 → 服务 → 环境变量；注意 `NEXT_PUBLIC_*` 同时要在「构建环境变量」里填写，否则不会打进前端包）：
+   - `DATABASE_URL`：PostgreSQL 连接串（可用 Neon / Supabase / 腾讯云 PostgreSQL，见上文数据库部分）
+   - `SESSION_SECRET`、`VAPID_PRIVATE_KEY`、`VAPID_SUBJECT`
+   - `NEXT_PUBLIC_VAPID_PUBLIC_KEY`、`NEXT_PUBLIC_SITE_URL`（后者填云托管分配到的国内域名）
+4. 部署完成后，云托管会给出一个国内可访问的地址（形如 `*.apigw.tencentcs.com` 或你绑定的自定义域名）。
+
+### 3. 数据库位置建议
+
+- 应用部署在国内，若数据库仍在海外（Neon 美东），每次查询会跨边境、略慢但可用。
+- 若要最佳体验，可把数据库也迁到国内（如腾讯云 PostgreSQL），只需改 `DATABASE_URL`，代码无需改动。
+
+### 4. 其他
+
+- 容器启动命令已在 Dockerfile 写好：先 `prisma db push`（幂等建表）再 `next start`，**无需手动建表**。
+- 后续推新提交到 `main`，云托管可配置为自动重新部署。

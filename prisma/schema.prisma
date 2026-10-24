@@ -1,18 +1,15 @@
 // 大连理工盘锦校区「搭子」平台 — 数据模型
 //
-// 数据库说明：
-// 默认使用 SQLite 以便「零配置」本地跑通（npm run setup 即可）。
-// 生产环境切换 PostgreSQL 只需两处改动，schema 完全兼容：
-//   1) datasource provider 改为 "postgresql"
-//   2) .env 中 DATABASE_URL 改为 postgresql://...
-// 所有状态字段使用 String 而非 enum，正是为了保持两种数据库零差异。
+// 数据库：使用 PostgreSQL（已切换，兼容 Neon / Supabase / 任意托管 PG）。
+// 所有状态字段使用 String 而非 enum，保持数据库无关性。
+// 本地开发如需改回 SQLite：把 provider 改回 "sqlite" 且 DATABASE_URL 改回 file: 即可。
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
